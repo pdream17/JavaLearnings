@@ -1,4 +1,11 @@
+#First build dockerfile using tag audience:1.0 and then run docker-compose up -d
+
 version: "3.3"
+
+networks:
+  bridge:
+    driver: bridge
+
 services:
   jobmanager:
     image: audience:1.0
@@ -7,6 +14,10 @@ services:
     command: jobmanager
     environment:
       - JOB_MANAGER_RPC_ADDRESS=jobmanager
+    networks:
+      bridge:
+        aliases:
+          - jobmanager
 
   taskmanager:
     image: audience:1.0
@@ -16,6 +27,10 @@ services:
     environment:
       - JOB_MANAGER_RPC_ADDRESS=jobmanager
       - TASK_MANAGER_NUMBER_OF_TASK_SLOTS=1
+    networks:
+      bridge:
+        aliases:
+          - taskmanager
 
   zookeeper:
     image: wurstmeister/zookeeper
@@ -23,6 +38,10 @@ services:
       - "2181:2181"
     depends_on:
       - taskmanager
+    networks:
+      bridge:
+        aliases:
+          - zookeeper
 
   kafka:
     image: wurstmeister/kafka:latest
@@ -31,5 +50,12 @@ services:
     depends_on:
       - zookeeper
     environment:
-      KAFKA_ADVERTISED_HOST_NAME: localhost
+      KAFKA_BROKER_ID: 1
+      KAFKA_ADVERTISED_HOST_NAME: 0.0.0.0
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CREATE_TOPICS: "kafkaFlinkTest:1:1"
+    networks:
+      bridge:
+        aliases:
+          - kafka
