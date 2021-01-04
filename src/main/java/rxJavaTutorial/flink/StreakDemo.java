@@ -1,13 +1,13 @@
 package rxJavaTutorial.flink;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.state.MapState;
 import org.apache.flink.api.common.state.MapStateDescriptor;
 import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.functions.KeySelector;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -15,7 +15,6 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingProcessingTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
-import org.apache.flink.streaming.api.windowing.triggers.Trigger;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer;
 import org.apache.flink.util.Collector;
@@ -23,6 +22,8 @@ import rxJavaTutorial.flink.pojos.Record;
 import rxJavaTutorial.flink.pojos.UserActivity;
 
 import java.io.IOException;
+import java.util.Iterator;
+import java.util.Map;
 import java.util.Properties;
 
 public class StreakDemo {
@@ -44,6 +45,9 @@ public class StreakDemo {
         //Trigger
         // OnEvent ---> Continue
         // OnEventTime/OnProcessingTime ---> seperate event (POJO -- windowStartTime, windowEndTime) produce it to kafka
+
+        //ProducerRecord --> 1. UserActivity 2. MaxStreak =7
+        //streakCount%maxStreak
 
         DataStream<UserActivity> finalStream =
                 stream
@@ -86,7 +90,7 @@ class RecordKey implements KeySelector<Record, Long> {
 
 class StreakProcessing extends ProcessWindowFunction<Record, UserActivity, Long, TimeWindow> {
 
-    private MapState<Long, Boolean> mapping;
+    private MapState<Long, Tuple2<Long, Long>> mapping;
 
     @Override
     public void process(Long s, Context context, Iterable<Record> elements, Collector<UserActivity> out) throws Exception {
@@ -99,14 +103,36 @@ class StreakProcessing extends ProcessWindowFunction<Record, UserActivity, Long,
                     .build();
             out.collect(activity);
         }
+        if (!mapping.contains(s))
+            mapping.put(s, Tuple2.of(context.window().maxTimestamp(), 1L));
+        else {
+            Tuple2<Long, Long> tuple = mapping.get(s);
+            long endTimestampLastWindow = tuple.f0;
+            long streak = tuple.f1;
+
+            if (context.window().getStart()-1==endTimestampLastWindow) {
+                streak +=1;
+                mapping.put(s, Tuple2.of(context.window().maxTimestamp(), streak));
+            } else {
+                mapping.put(s, Tuple2.of(context.window().maxTimestamp(), 1L));
+            }
+        }
+        System.out.println("Elements contained inside mapping are: ");
+        for (Iterator<Map.Entry<Long, Tuple2<Long, Long>>> it = mapping.iterator(); it.hasNext(); ) {
+            Map.Entry<Long, Tuple2<Long, Long>> entry = it.next();
+            System.out.println("Key is: " + entry.getKey() + " Value is: " + entry.getValue());
+        }
     }
 
     @Override
     public void open(Configuration parameters) {
-        MapStateDescriptor<Long, Boolean> descriptor =
+        MapStateDescriptor<Long, Tuple2<Long, Long>> descriptor =
                 new MapStateDescriptor<>("mapping",
-                        Long.class,
-                        Boolean.class);
+                        TypeInformation.of(new TypeHint<Long>() {
+                        }),
+                        TypeInformation.of(new TypeHint<Tuple2<Long, Long>>() {
+                        })
+                );
 
         mapping = getRuntimeContext().getMapState(descriptor);
     }
