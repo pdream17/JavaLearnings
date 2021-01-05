@@ -20,6 +20,7 @@ import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer;
 import org.apache.flink.util.Collector;
 import rxJavaTutorial.flink.pojos.Record;
 import rxJavaTutorial.flink.pojos.UserActivity;
+import rxJavaTutorial.flink.pojos.UserStreakCount;
 
 import java.io.IOException;
 import java.util.Iterator;
@@ -38,6 +39,8 @@ public class StreakDemo {
         FlinkKafkaConsumer<Record> consumer = new FlinkKafkaConsumer<>("patternTest1", new RecordSchema(), properties);
         consumer.setStartFromLatest();
         DataStream<Record> stream = env.addSource(consumer);
+        //JsonNode   /path ><=
+        //parallelism =1 source =1, operator =1 , sink=1
 //        stream.assignTimestampsAndWatermarks(
 //                WatermarkStrategy.forBoundedOutOfOrderness(Duration.ZERO)
 //        );
@@ -49,12 +52,11 @@ public class StreakDemo {
         //ProducerRecord --> 1. UserActivity 2. MaxStreak =7
         //streakCount%maxStreak
 
-        DataStream<UserActivity> finalStream =
+        DataStream<UserStreakCount> finalStream =
                 stream
                         .keyBy(new RecordKey())
                         .window(TumblingProcessingTimeWindows.of(Time.seconds(10)))
                         .process(new StreakProcessing());
-
         finalStream.print();
         env.execute("Streak Demo");
     }
@@ -88,34 +90,39 @@ class RecordKey implements KeySelector<Record, Long> {
     }
 }
 
-class StreakProcessing extends ProcessWindowFunction<Record, UserActivity, Long, TimeWindow> {
+class StreakProcessing extends ProcessWindowFunction<Record, UserStreakCount, Long, TimeWindow> {
 
     private MapState<Long, Tuple2<Long, Long>> mapping;
 
     @Override
-    public void process(Long s, Context context, Iterable<Record> elements, Collector<UserActivity> out) throws Exception {
+    public void process(Long s, Context context, Iterable<Record> elements, Collector<UserStreakCount> out) throws Exception {
         System.out.println("Processing time is: " + context.currentProcessingTime());
+        long streak = 1L;
         if (elements.iterator().hasNext()) {
             UserActivity activity = UserActivity.builder()
                     .userId(s)
                     .startTimestamp(context.window().getStart())
                     .endTimestamp(context.window().maxTimestamp())
                     .build();
-            out.collect(activity);
-        }
-        if (!mapping.contains(s))
-            mapping.put(s, Tuple2.of(context.window().maxTimestamp(), 1L));
-        else {
-            Tuple2<Long, Long> tuple = mapping.get(s);
-            long endTimestampLastWindow = tuple.f0;
-            long streak = tuple.f1;
-
-            if (context.window().getStart()-1==endTimestampLastWindow) {
-                streak +=1;
+            if (!mapping.contains(s))
                 mapping.put(s, Tuple2.of(context.window().maxTimestamp(), streak));
-            } else {
-                mapping.put(s, Tuple2.of(context.window().maxTimestamp(), 1L));
+            else {
+                Tuple2<Long, Long> tuple = mapping.get(s);
+                long endTimestampLastWindow = tuple.f0;
+                streak = tuple.f1;
+
+                if (context.window().getStart()-1==endTimestampLastWindow) {
+                    streak +=1;
+                } else {
+                    streak = 1;
+                }
+                mapping.put(s, Tuple2.of(context.window().maxTimestamp(), streak));
             }
+            UserStreakCount userStreakCount = UserStreakCount.builder()
+                    .userActivity(activity)
+                    .streak(streak)
+                    .build();
+            out.collect(userStreakCount);
         }
         System.out.println("Elements contained inside mapping are: ");
         for (Iterator<Map.Entry<Long, Tuple2<Long, Long>>> it = mapping.iterator(); it.hasNext(); ) {
